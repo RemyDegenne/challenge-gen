@@ -3,8 +3,34 @@ import LMLExposition.Extract
 /-!
 # Tests for `LMLExposition.Extract`
 
-Extraction renders declarations from the elaborated environment, which needs an `Environment`;
-that path is exercised end-to-end against a real project. The pure helper unit tests that existed
-here (`emitOrder`) were removed when `Extract.lean` was rewritten to derive declaration order
-directly from the environment's module graph rather than a standalone topological sort.
+The bulk of extraction renders declarations from the elaborated environment and is exercised
+end-to-end against a real project (constructing a synthetic `Environment`/`Syntax` for those paths is
+impractical). Here we unit-test the pure string/syntax helpers.
+
+Each check is a `#guard`, so any regression turns into a build error. Run with `lake build Test`.
 -/
+
+open Lean Std
+open LMLExposition
+
+namespace LMLExposition.Test
+
+/-! ## `collapseBlankRuns` -/
+
+-- A run of two or more blank lines collapses to a single blank line; everything else is unchanged.
+#guard collapseBlankRuns "a\n\n\nb" == "a\n\nb"
+#guard collapseBlankRuns "a\n\n\n\n\nb" == "a\n\nb"
+#guard collapseBlankRuns "a\n\nb" == "a\n\nb"        -- already a single blank line: unchanged
+#guard collapseBlankRuns "a\nb" == "a\nb"            -- no blank line: unchanged
+#guard collapseBlankRuns "a\n\n\n" == "a\n"          -- trailing blank run collapses too
+-- Whitespace-only lines count as blank; a run collapses to its first line (kept verbatim).
+#guard collapseBlankRuns "a\n  \n\t\nb" == "a\n  \nb"
+
+/-! ## `collectSyntaxKinds` -/
+
+-- Every node's kind is collected; a notation use surfaces as a node of the notation parser's kind.
+#guard (collectSyntaxKinds (.node .none `A.b #[.node .none `C.d #[]])).contains `A.b
+#guard (collectSyntaxKinds (.node .none `A.b #[.node .none `C.d #[]])).contains `C.d
+#guard !(collectSyntaxKinds (.node .none `A.b #[])).contains `X.y
+
+end LMLExposition.Test
