@@ -26,6 +26,15 @@ namespace LMLExposition.Test
 -- Whitespace-only lines count as blank; a run collapses to its first line (kept verbatim).
 #guard collapseBlankRuns "a\n  \n\t\nb" == "a\n  \nb"
 
+/-! ## `binderBoundNames` -/
+
+-- Names before the first `:` are the bound (local) variables; the type after it is references.
+#guard binderBoundNames "{ι Ω β : Type*}" == #["ι", "Ω", "β"]
+#guard binderBoundNames "(hs : IndexedPartition s)" == #["hs"]
+#guard binderBoundNames "[inst : Foo α]" == #["inst"]
+#guard binderBoundNames "[TopologicalSpace β]" == #[]      -- anonymous instance binder: no bound name
+#guard binderBoundNames "{α β}" == #["α", "β"]             -- no `:`: all identifiers are bound
+
 /-! ## `collectSyntaxKinds` -/
 
 -- Every node's kind is collected; a notation use surfaces as a node of the notation parser's kind.
