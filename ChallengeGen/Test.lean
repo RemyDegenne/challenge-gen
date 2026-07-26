@@ -35,6 +35,23 @@ namespace LMLExposition.Test
 #guard binderBoundNames "[TopologicalSpace β]" == #[]      -- anonymous instance binder: no bound name
 #guard binderBoundNames "{α β}" == #["α", "β"]             -- no `:`: all identifiers are bound
 
+/-! ## `binderTypeHead?`
+
+The head symbol of a binder's *type*, used by `pruneVariable` to resolve generalized field
+notation (`𝓕.IsComplete` ⇒ `Filtration.IsComplete`) back to the declaration it references. -/
+
+#guard binderTypeHead? "{𝓕 : Filtration ι mΩ}" == some `Filtration
+#guard binderTypeHead? "(hs : IndexedPartition s)" == some `IndexedPartition
+#guard binderTypeHead? "[inst : Foo α]" == some `Foo
+-- A qualified head keeps its dots, so it resolves as one name rather than as a receiver+field.
+#guard binderTypeHead? "{μ : MeasureTheory.Measure Ω}" == some `MeasureTheory.Measure
+-- No `:` separator, so there is no type to read.
+#guard binderTypeHead? "[TopologicalSpace β]" == none
+#guard binderTypeHead? "{α β}" == none
+-- A function type reports the head of its *first* argument; `pruneVariable` only ever uses this to
+-- look up an exact excluded name, so an imprecise head simply fails to match and drops nothing.
+#guard binderTypeHead? "{X : ι → Ω → E}" == some `ι
+
 /-! ## `collectSyntaxKinds` -/
 
 -- Every node's kind is collected; a notation use surfaces as a node of the notation parser's kind.
