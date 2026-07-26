@@ -52,6 +52,30 @@ notation (`𝓕.IsComplete` ⇒ `Filtration.IsComplete`) back to the declaration
 -- look up an exact excluded name, so an imprecise head simply fails to match and drops nothing.
 #guard binderTypeHead? "{X : ι → Ω → E}" == some `ι
 
+/-! ## `isDroppedAttribute`
+
+Attributes whose elaboration-time side effect cannot work in a standalone extraction are removed;
+the ones that *generate* declarations the closure may depend on must survive. -/
+
+-- `@[ext]` on a theorem only registers it and proves an `_iff` converse: inert here, and the proof
+-- needs a `@[refl]` lemma that is not in the closure.
+#guard isDroppedAttribute false "ext"
+#guard isDroppedAttribute false "ext (iff := false)"
+-- ...but on a structure it is what *defines* `Foo.ext`/`Foo.ext_iff`, so it must stay.
+#guard !isDroppedAttribute true "ext"
+-- Matching is on whole tokens, so a different attribute that merely starts with "ext" is untouched.
+#guard !isDroppedAttribute false "extern \"lean_foo\""
+
+-- Every `to_additive` form is kept. Plain `to_additive` generates the additive sibling; the
+-- `existing` form looks inert but registers the translation that *later* `to_additive` commands
+-- need, so dropping it breaks them (see `isDroppedAttribute`).
+#guard !isDroppedAttribute false "to_additive existing"
+#guard !isDroppedAttribute false "to_additive"
+#guard !isDroppedAttribute false "to_additive (attr := simps)"
+
+#guard !isDroppedAttribute false "simp"
+#guard !isDroppedAttribute false "refl"
+
 /-! ## `collectSyntaxKinds` -/
 
 -- Every node's kind is collected; a notation use surfaces as a node of the notation parser's kind.
