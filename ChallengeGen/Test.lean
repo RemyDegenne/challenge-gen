@@ -1,4 +1,11 @@
-import LMLExposition.Extract
+module
+
+public import LMLExposition.Extract
+-- The checks below are `#guard`s, which Lean elaborates into compile-time (`meta`)
+-- definitions, so the declarations under test have to be imported at that level too.
+meta import LMLExposition.Extract
+
+@[expose] public section
 
 /-!
 # Tests for `LMLExposition.Extract`
