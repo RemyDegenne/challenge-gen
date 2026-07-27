@@ -76,6 +76,24 @@ the ones that *generate* declarations the closure may depend on must survive. -/
 #guard !isDroppedAttribute false "simp"
 #guard !isDroppedAttribute false "refl"
 
+/-! ## `isTranslationAttribute`
+
+Standalone `attribute …` commands are replayed only when they register a translation, since those
+are the ones whose loss makes *other* declarations fail to elaborate. -/
+
+#guard isTranslationAttribute "to_dual existing"
+#guard isTranslationAttribute "to_dual"
+#guard isTranslationAttribute "to_additive"
+#guard isTranslationAttribute "to_additive (attr := simps)"
+-- Proof-elaboration attributes are not replayed: moot when every proof is `sorry`, and replaying
+-- them pulls whole modules into targets that do not need them.
+#guard !isTranslationAttribute "simp"
+#guard !isTranslationAttribute "fun_prop"
+#guard !isTranslationAttribute "measurability"
+#guard !isTranslationAttribute "aesop (rule_sets := [finiteness]) safe apply"
+-- Matched on the leading token, so a longer name starting the same way does not hit.
+#guard !isTranslationAttribute "to_dual_extra"
+
 /-! ## `collectSyntaxKinds` -/
 
 -- Every node's kind is collected; a notation use surfaces as a node of the notation parser's kind.
