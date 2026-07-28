@@ -1,14 +1,14 @@
 module
 
-public import LMLExposition.Extract
+public import Referee.Extract
 -- The checks below are `#guard`s, which Lean elaborates into compile-time (`meta`)
 -- definitions, so the declarations under test have to be imported at that level too.
-meta import LMLExposition.Extract
+meta import Referee.Extract
 
 @[expose] public section
 
 /-!
-# Tests for `LMLExposition.Extract`
+# Tests for `Referee.Extract`
 
 The bulk of extraction renders declarations from the elaborated environment and is exercised
 end-to-end against a real project (constructing a synthetic `Environment`/`Syntax` for those paths is
@@ -18,9 +18,9 @@ Each check is a `#guard`, so any regression turns into a build error. Run with `
 -/
 
 open Lean Std
-open LMLExposition
+open Referee
 
-namespace LMLExposition.Test
+namespace Referee.Test
 
 /-! ## `collapseBlankRuns` -/
 
@@ -108,4 +108,4 @@ are the ones whose loss makes *other* declarations fail to elaborate. -/
 #guard (collectSyntaxKinds (.node .none `A.b #[.node .none `C.d #[]])).contains `C.d
 #guard !(collectSyntaxKinds (.node .none `A.b #[])).contains `X.y
 
-end LMLExposition.Test
+end Referee.Test
