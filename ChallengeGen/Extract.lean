@@ -103,6 +103,47 @@ structure CommandEntry where
   srcNoOmit? : Option String := none
   deriving Inhabited
 
+/-! ## Excluded upstream -/
+
+/-- External modules left out of an extracted file's import block even when the project imports them.
+
+`LeanSpec` is the only one. It provides `@[specifies]` and nothing else a formalization refers to:
+the attribute records a specification link for Referee to read back out of the environment, and it
+is *this file* that reads it — an extraction of one declaration has nothing to say with it. So the
+annotations are stripped (`isDroppedAttribute`) along with any option they are tuned by
+(`excludedOptions`), and then the import has nothing left to serve.
+
+Keeping it is worse than useless for the `--site-url` link: the web editor has Mathlib and nothing
+else, so a file importing `LeanSpec` does not compile there at all and the reader's first act has
+to be deleting a line.
+
+The cost is a project that mentions a `LeanSpec` *constant* (`SpecEntry`, `specEntries`) in a
+declaration this tool extracts — a tool reading annotations, not a formalization writing them. Such
+a declaration loses the import it needs. -/
+def excludedImports : Array Name := #[`LeanSpec]
+
+@[inherit_doc excludedImports]
+def isExcludedImport (m : Name) : Bool := excludedImports.any (hasPrefixName m ·)
+
+/-- Option namespaces registered by an `excludedImports` module. A `set_option` naming one of these
+is an `unknown option` error once the import is gone, so both forms — the file-level command and the
+`set_option … in <decl>` prefix — are dropped from the extracted file. `specifies` covers
+`specifies.checkTargetMentioned`, the one option `LeanSpec` registers. -/
+def excludedOptions : Array Name := #[`specifies]
+
+@[inherit_doc excludedOptions]
+def isExcludedOption (o : Name) : Bool := excludedOptions.any (hasPrefixName o ·)
+
+/-- The option a `set_option` command sets, read from its source text: the token after the keyword.
+Used for the file-level form, where the command survives as a context command rather than as part of
+a declaration's source. -/
+def setOptionName? (src : String) : Option Name :=
+  let toks := (src.split fun c => c == ' ' || c == '\n' || c == '\t' || c == '\r').toArray
+    |>.filterMap fun w =>
+      let w := w.trimAscii.toString
+      if w.isEmpty then none else some w
+  if toks[0]? == some "set_option" then toks[1]?.map (·.toName) else none
+
 /-! ## Syntax inspection -/
 
 /-- The `declVal` syntax node of a declaration (`:= …`, `| … => …`, or `where …`), if present. -/
@@ -412,11 +453,17 @@ def binderTypeHead? (binderSrc : String) : Option Name :=
 /-- True if this attribute must be dropped from an extracted declaration, given `attrSrc`, the
 source text of a single attribute inside an `@[…]` group.
 
-The one case is `@[ext]` on a *theorem*: it generates the converse of the ext lemma **and proves
-it**, which needs the `@[refl]` lemma of the relation in the statement (for `f ≡ᵐ[μ] g`, that is
-`Indistinguishable.refl`). Since that dependency runs through an attribute rather than through any
-term, it is invisible to the dependency analysis and the lemma is not in the closure. Registering
-the lemma for the `ext` tactic is of no use in a file whose proofs are all `sorry`.
+Two cases:
+
+* `@[ext]` on a *theorem*: it generates the converse of the ext lemma **and proves it**, which needs
+  the `@[refl]` lemma of the relation in the statement (for `f ≡ᵐ[μ] g`, that is
+  `Indistinguishable.refl`). Since that dependency runs through an attribute rather than through any
+  term, it is invisible to the dependency analysis and the lemma is not in the closure. Registering
+  the lemma for the `ext` tactic is of no use in a file whose proofs are all `sorry`.
+* `@[specifies]`: its only effect is to record a specification link for Referee to read back
+  (`LeanSpec`), which says nothing in a one-declaration file. Dropping it is what lets
+  `excludedImports` leave `import LeanSpec` out of the header — the two go together, since an
+  unimported attribute is a hard error.
 
 Three near neighbours are deliberately **kept**, each because it *produces* something the rest of
 the file may depend on rather than merely registering one:
@@ -429,14 +476,19 @@ the file may depend on rather than merely registering one:
   generating one) but is not: the link it registers is what lets *later* plain `@[to_additive]`
   commands translate a type mentioning the multiplicative declaration. Dropping it was measured to
   turn 5 failures into 339 on the brownian-motion corpus, every one of them a downstream
-  `to_additive` translation that could no longer map `Monoid γ` to `AddMonoid γ`. -/
+  `to_additive` translation that could no longer map `Monoid γ` to `AddMonoid γ`.
+
+Matching is on the attribute's own leading token, so the `local`/`scoped` kind prefix — part of the
+source text of the attribute, not of the `@[…]` group — is skipped first. -/
 def isDroppedAttribute (onStructure : Bool) (attrSrc : String) : Bool :=
   let toks := (attrSrc.split fun c => c == ' ' || c == '\n' || c == '\t' || c == '\r').toArray
     |>.filterMap fun w =>
       let w := w.trimAscii.toString
       if w.isEmpty then none else some w
+  let toks := if toks[0]? == some "local" || toks[0]? == some "scoped" then toks.drop 1 else toks
   match toks[0]? with
   | some "ext" => !onStructure
+  | some "specifies" => true
   | _ => false
 
 /-- Source edits dropping every `isDroppedAttribute` from the `@[…]` groups in `root`. A group is
@@ -465,6 +517,30 @@ partial def attributeStripEdits (source : String) (root : Syntax) (onStructure :
     else
       for a in stx.getArgs do
         worklist := worklist.push a
+  return acc
+
+/-- Source edits dropping every `set_option <excluded> <value> in` prefix in `root`, `<excluded>`
+being an `isExcludedOption` name — an option whose registering package the extracted file does not
+import, hence an `unknown option` error if left in.
+
+`opt val in <decl>` parses as `Command.in` with the `set_option` as its first child and the ` in`
+token as its second, so the range from the node's start to that token's end is exactly the prefix.
+The wrapped declaration keeps its own position, so this composes with the other edits. -/
+partial def setOptionStripEdits (root : Syntax) :
+    Array (String.Pos.Raw × String.Pos.Raw × String) := Id.run do
+  let mut acc : Array (String.Pos.Raw × String.Pos.Raw × String) := #[]
+  let mut worklist : Array Syntax := #[root]
+  while !worklist.isEmpty do
+    let stx := worklist.back!
+    worklist := worklist.pop
+    if stx.getKind == ``Parser.Command.in && stx.getArgs.size ≥ 3
+        && stx[0].getKind == ``Parser.Command.«set_option» && stx[0].getArgs.size ≥ 2
+        && isExcludedOption stx[0][1].getId then
+      match stx.getPos?, stx[1].getTailPos? with
+      | some s, some e => acc := acc.push (s, e, "")
+      | _, _ => pure ()
+    for a in stx.getArgs do
+      worklist := worklist.push a
   return acc
 
 /-- Attributes that register a *translation* between a declaration and its multiplicative/additive
@@ -569,19 +645,21 @@ def processFile (env : Environment) (source : String) (filePath : String)
           | some (dpos, instances) => (dpos, instances)
           | none => (cmdEnd, #[])
       -- Attributes whose elaboration reaches outside this file are dropped from every declaration
-      -- command, theorem or not (see `isDroppedAttribute`).
-      let attrEdits := attributeStripEdits source stx (isStructureDecl stx)
+      -- command, theorem or not (see `isDroppedAttribute`), as is any `set_option … in` prefix
+      -- naming an option the extracted file's imports no longer register (see `excludedOptions`).
+      let prefixEdits :=
+        attributeStripEdits source stx (isStructureDecl stx) ++ setOptionStripEdits stx
       -- Renders the command from `start`, which is either the command's own start or — for a
       -- declaration wrapped in `omit … in` — the start of the wrapped declaration, so that
       -- `pruneOmit` can re-render the prefix per target. Edits before `start` are irrelevant to
       -- that slice and are dropped, since `applyEdits` reads its edits in position order.
       let mkSrc (start : String.Pos.Raw) : String :=
-        let attrEdits := attrEdits.filter fun (r : String.Pos.Raw × String.Pos.Raw × String) =>
+        let prefixEdits := prefixEdits.filter fun (r : String.Pos.Raw × String.Pos.Raw × String) =>
           r.1.byteIdx ≥ start.byteIdx
         if isTheoremDecl stx then
           match findDeclVal? stx with
-          | some (valStart, _) => applyEdits source start valStart attrEdits ++ ":= sorry"
-          | none => applyEdits source start cmdEnd attrEdits
+          | some (valStart, _) => applyEdits source start valStart prefixEdits ++ ":= sorry"
+          | none => applyEdits source start cmdEnd prefixEdits
         else
           let edits :=
             if isStructureDecl stx then
@@ -606,7 +684,7 @@ def processFile (env : Environment) (source : String) (filePath : String)
                 !spared.any fun (s : String.Pos.Raw × String.Pos.Raw) =>
                   s.1.byteIdx == r.1.byteIdx && s.2.byteIdx == r.2.byteIdx
               byBlocks.map fun (bs, be) => (bs, be, "sorry")
-          applyEdits source start declEnd (attrEdits ++ edits)
+          applyEdits source start declEnd (prefixEdits ++ edits)
       let src := mkSrc cmdStart
       let (omitBinders, srcNoOmit?) :=
         match decomposeOmit? source stx with
@@ -712,7 +790,8 @@ def truncateAfterTarget (involved : Array (Name × Array CommandEntry)) (target 
 inline rather than imported, an external (e.g. Mathlib) dependency may only be reachable *through* a
 project module. So we walk the import graph transitively through project modules, collecting the
 external "frontier" — every external module directly imported by any project module reachable from
-`modules`. `public import`ing those covers their transitive dependencies. -/
+`modules`, less the `excludedImports`. `public import`ing those covers their transitive
+dependencies. -/
 partial def externalImports (env : Environment) (rootPrefix : Name) (modules : Array Name) :
     Array Name := Id.run do
   let directImports (modName : Name) : Array Name := Id.run do
@@ -733,6 +812,8 @@ partial def externalImports (env : Environment) (rootPrefix : Name) (modules : A
       if m == `Init then continue
       if hasPrefixName m rootPrefix then
         stack := m :: stack            -- project module: recurse into its imports
+      else if isExcludedImport m then
+        continue                       -- external, but deliberately not imported (see above)
       else if !seenExt.contains m then
         seenExt := seenExt.insert m    -- external module: part of the import frontier
         result := result.push m
@@ -1052,6 +1133,10 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
               env.contains full && isProjectLocalConst env rootPrefix full && !keep.contains full
           if e.attrIsTranslation && !e.attrTargets.any targetMissing then
             items := items.push (.hard, e.src ++ "\n")
+        else if e.kind == ``Parser.Command.«set_option»
+            && (setOptionName? e.src).any isExcludedOption then
+          pure ()   -- an option registered by a package this file does not import; see
+                    -- `excludedOptions`. The `set_option … in <decl>` form is handled in `mkSrc`.
         else if e.kind == ``Parser.Command.«open» then
           -- Tokens after `open`/`scoped` name namespaces brought into scope.
           for tok in (e.src.replace "\n" " ").splitOn " " do

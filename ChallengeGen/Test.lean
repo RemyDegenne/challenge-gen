@@ -83,6 +83,50 @@ the ones that *generate* declarations the closure may depend on must survive. -/
 #guard !isDroppedAttribute false "simp"
 #guard !isDroppedAttribute false "refl"
 
+-- `@[specifies]` records a link for Referee to read back and does nothing in a standalone file. It
+-- is dropped in every form, which is what lets `isExcludedImport` withhold `import LeanSpec`.
+#guard isDroppedAttribute false "specifies"
+#guard isDroppedAttribute false "specifies entropy"
+#guard isDroppedAttribute false "specifies entropy \"agrees with the textbook formula\""
+#guard isDroppedAttribute true "specifies"
+#guard !isDroppedAttribute false "specifies_foo"
+
+-- The `local`/`scoped` attribute kind is part of the attribute's source text; matching skips it, so
+-- a dropped attribute is dropped in every kind.
+#guard isDroppedAttribute false "local specifies double"
+#guard isDroppedAttribute false "scoped specifies"
+#guard isDroppedAttribute false "local ext"
+#guard !isDroppedAttribute true "local ext"
+#guard !isDroppedAttribute false "local simp"
+
+/-! ## `isExcludedImport` / `isExcludedOption`
+
+`LeanSpec` carries the `@[specifies]` attribute and nothing a formalization refers to; since every
+annotation is stripped, the extracted file must not import it — the web editor has Mathlib only.
+Whatever the dropped import registered has to go with it, options included. -/
+
+#guard isExcludedImport `LeanSpec
+#guard isExcludedImport `LeanSpec.Basic          -- a submodule, were the package ever to grow one
+-- Component-wise, so a project whose name merely starts the same way is untouched.
+#guard !isExcludedImport `LeanSpecExtra
+#guard !isExcludedImport `Mathlib
+#guard !isExcludedImport `Mathlib.Order.LeanSpec
+
+#guard isExcludedOption `specifies.checkTargetMentioned
+#guard !isExcludedOption `maxHeartbeats
+#guard !isExcludedOption `linter.all
+
+/-! ## `setOptionName?`
+
+The file-level `set_option` survives as a context command rather than inside a declaration's source,
+so the option it names is read back out of that text. -/
+
+#guard setOptionName? "set_option specifies.checkTargetMentioned false" ==
+  some `specifies.checkTargetMentioned
+#guard setOptionName? "set_option maxHeartbeats 400000" == some `maxHeartbeats
+#guard setOptionName? "set_option\n  pp.all\n  true" == some `pp.all   -- laid out over lines
+#guard setOptionName? "variable {α : Type*}" == none                   -- not a `set_option` at all
+
 /-! ## `isTranslationAttribute`
 
 Standalone `attribute …` commands are replayed only when they register a translation, since those
