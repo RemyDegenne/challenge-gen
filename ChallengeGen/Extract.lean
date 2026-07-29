@@ -107,10 +107,10 @@ structure CommandEntry where
 
 /-- External modules left out of an extracted file's import block even when the project imports them.
 
-`LeanSpec` is the only one. It provides `@[specifies]` and nothing else a formalization refers to:
-the attribute records a specification link for Referee to read back out of the environment, and it
-is *this file* that reads it — an extraction of one declaration has nothing to say with it. So the
-annotations are stripped (`isDroppedAttribute`) along with any option they are tuned by
+`LeanSpec` is the only one. It provides `@[specifies]` and `@[characterization]` and nothing else a
+formalization refers to: both record links for Referee to read back out of the environment, and it
+is *this file* that reads them — an extraction of one declaration has nothing to say with them. So
+the annotations are stripped (`isDroppedAttribute`) along with any option they are tuned by
 (`excludedOptions`), and then the import has nothing left to serve.
 
 Keeping it is worse than useless for the `--site-url` link: the web editor has Mathlib and nothing
@@ -127,9 +127,10 @@ def isExcludedImport (m : Name) : Bool := excludedImports.any (hasPrefixName m �
 
 /-- Option namespaces registered by an `excludedImports` module. A `set_option` naming one of these
 is an `unknown option` error once the import is gone, so both forms — the file-level command and the
-`set_option … in <decl>` prefix — are dropped from the extracted file. `specifies` covers
-`specifies.checkTargetMentioned`, the one option `LeanSpec` registers. -/
-def excludedOptions : Array Name := #[`specifies]
+`set_option … in <decl>` prefix — are dropped from the extracted file. `specifies` and
+`characterization` cover `specifies.checkTargetMentioned` and
+`characterization.checkNotCircular`, the two options `LeanSpec` registers. -/
+def excludedOptions : Array Name := #[`specifies, `characterization]
 
 @[inherit_doc excludedOptions]
 def isExcludedOption (o : Name) : Bool := excludedOptions.any (hasPrefixName o ·)
@@ -460,10 +461,11 @@ Two cases:
   `Indistinguishable.refl`). Since that dependency runs through an attribute rather than through any
   term, it is invisible to the dependency analysis and the lemma is not in the closure. Registering
   the lemma for the `ext` tactic is of no use in a file whose proofs are all `sorry`.
-* `@[specifies]`: its only effect is to record a specification link for Referee to read back
-  (`LeanSpec`), which says nothing in a one-declaration file. Dropping it is what lets
-  `excludedImports` leave `import LeanSpec` out of the header — the two go together, since an
-  unimported attribute is a hard error.
+* `@[specifies]` and `@[characterization]`: their only effect is to record a link for Referee to
+  read back (`LeanSpec`), which says nothing in a one-declaration file — a characterization's three
+  parts are three separate declarations, so an extraction of any one of them has at most a third of
+  the claim. Dropping them is what lets `excludedImports` leave `import LeanSpec` out of the
+  header — the two go together, since an unimported attribute is a hard error.
 
 Three near neighbours are deliberately **kept**, each because it *produces* something the rest of
 the file may depend on rather than merely registering one:
@@ -489,6 +491,7 @@ def isDroppedAttribute (onStructure : Bool) (attrSrc : String) : Bool :=
   match toks[0]? with
   | some "ext" => !onStructure
   | some "specifies" => true
+  | some "characterization" => true
   | _ => false
 
 /-- Source edits dropping every `isDroppedAttribute` from the `@[…]` groups in `root`. A group is

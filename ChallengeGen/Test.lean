@@ -91,6 +91,14 @@ the ones that *generate* declarations the closure may depend on must survive. -/
 #guard isDroppedAttribute true "specifies"
 #guard !isDroppedAttribute false "specifies_foo"
 
+-- `@[characterization]` is the same story, and the `true` case matters more here: the property of a
+-- characterization is often a `structure` or a `class`.
+#guard isDroppedAttribute false "characterization existence"
+#guard isDroppedAttribute false "characterization uniqueness IsEntropy"
+#guard isDroppedAttribute false "characterization property entropy \"the Shannon axioms\""
+#guard isDroppedAttribute true "characterization property entropy"
+#guard !isDroppedAttribute false "characterizations"
+
 -- The `local`/`scoped` attribute kind is part of the attribute's source text; matching skips it, so
 -- a dropped attribute is dropped in every kind.
 #guard isDroppedAttribute false "local specifies double"
@@ -101,9 +109,10 @@ the ones that *generate* declarations the closure may depend on must survive. -/
 
 /-! ## `isExcludedImport` / `isExcludedOption`
 
-`LeanSpec` carries the `@[specifies]` attribute and nothing a formalization refers to; since every
-annotation is stripped, the extracted file must not import it — the web editor has Mathlib only.
-Whatever the dropped import registered has to go with it, options included. -/
+`LeanSpec` carries the `@[specifies]` and `@[characterization]` attributes and nothing a
+formalization refers to; since every annotation is stripped, the extracted file must not import
+it — the web editor has Mathlib only. Whatever the dropped import registered has to go with it,
+options included. -/
 
 #guard isExcludedImport `LeanSpec
 #guard isExcludedImport `LeanSpec.Basic          -- a submodule, were the package ever to grow one
@@ -113,6 +122,7 @@ Whatever the dropped import registered has to go with it, options included. -/
 #guard !isExcludedImport `Mathlib.Order.LeanSpec
 
 #guard isExcludedOption `specifies.checkTargetMentioned
+#guard isExcludedOption `characterization.checkNotCircular
 #guard !isExcludedOption `maxHeartbeats
 #guard !isExcludedOption `linter.all
 
