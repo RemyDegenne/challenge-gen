@@ -1240,7 +1240,7 @@ def writeAllExtractions (env : Environment) (rootPrefix : Name)
     --    it defines, so each sibling must be present and elaborable;
     --  * the transitive dependencies of anything the two steps above newly added.
     -- The last step is skipped on the first round: those names come from `decl.transDeps`, which
-    -- is already closed under `graphDeps`, so expanding them again would only re-walk the closure
+    -- is already closed under `closureDeps`, so expanding them again would only re-walk the closure
     -- of every member for no gain.
     let mut frontier : Array Name := keep.toArray
     let mut closeDeps := false
