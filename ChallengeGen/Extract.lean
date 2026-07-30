@@ -1,6 +1,7 @@
 module
 
 public import Referee.Collect
+public import Referee.SourceSyntax
 
 @[expose] public section
 
@@ -168,34 +169,17 @@ def findDeclVal? (root : Syntax) : Option (String.Pos.Raw × String.Pos.Raw) := 
   | some s, some e => some (s, e)
   | _, _ => none
 
-/-- True if `stx` declares a `theorem` or `lemma` (whose proof we replace by `sorry`). `theorem`
-parses as `Command.declaration` with the keyword node `Command.theorem`; `lemma` (a Mathlib synonym)
-keeps its own `lemma` syntax kind until macro expansion. We search the whole tree so that wrapper
-commands like `omit … in <decl>` / `open … in <decl>` are seen through (a `def`'s syntax never
-contains a `theorem`/`lemma` *command* node, so this stays specific). -/
-partial def isTheoremDecl (stx : Syntax) : Bool := Id.run do
-  let mut worklist : Array Syntax := #[stx]
-  while !worklist.isEmpty do
-    let s := worklist.back!
-    worklist := worklist.pop
-    let k := s.getKind
-    if k == ``Parser.Command.theorem || k == `lemma then return true
-    for arg in s.getArgs do
-      worklist := worklist.push arg
-  return false
+/-- True if `stx` declares a `theorem` or `lemma`, whose proof we replace by `sorry`.
+
+`theorem` parses as `Command.declaration` with the keyword node `Command.theorem`; a `lemma` keeps
+its own syntax kind until macro expansion. Which kinds count is `theoremSyntaxKinds`, shared with
+`Collect` so that the two cannot disagree about what a `lemma` is — they did, and a Batteries
+`lemma` had its whole proof emitted here instead of `sorry`. -/
+def isTheoremDecl (stx : Syntax) : Bool := containsSyntaxKind stx theoremSyntaxKinds
 
 /-- True if `stx` declares a `structure` or a `class` (both parse as `Command.structure`, which
-begins with either `structureTk` or `classTk`). Searched over the whole tree for the same reason as
-`isTheoremDecl`: wrapper commands like `open … in <decl>` must be seen through. -/
-partial def isStructureDecl (stx : Syntax) : Bool := Id.run do
-  let mut worklist : Array Syntax := #[stx]
-  while !worklist.isEmpty do
-    let s := worklist.back!
-    worklist := worklist.pop
-    if s.getKind == ``Parser.Command.structure then return true
-    for arg in s.getArgs do
-      worklist := worklist.push arg
-  return false
+begins with either `structureTk` or `classTk`). -/
+def isStructureDecl (stx : Syntax) : Bool := containsSyntaxKind stx structureSyntaxKinds
 
 /-- The byte ranges of the outermost `by …` tactic blocks inside `root` (not recursing into a block
 already collected). Used to replace embedded proofs in a *definition's* value with `sorry`. -/
@@ -273,17 +257,6 @@ partial def collectBinderTactics (root : Syntax) : Array (String.Pos.Raw × Stri
       for arg in stx.getArgs do
         worklist := worklist.push arg
   return acc
-
-/-- The first descendant of `root` with the given syntax kind (breadth-first). -/
-partial def findFirstOfKind? (root : Syntax) (kind : SyntaxNodeKind) : Option Syntax := Id.run do
-  let mut worklist : Array Syntax := #[root]
-  while !worklist.isEmpty do
-    let stx := worklist.back!
-    worklist := worklist.pop
-    if stx.getKind == kind then return some stx
-    for arg in stx.getArgs do
-      worklist := worklist.push arg
-  return none
 
 /-- Every `SyntaxNodeKind` occurring anywhere in `stx` (including `stx` itself). A notation use shows
 up here as a node whose kind is the notation parser's name. -/
@@ -604,20 +577,13 @@ def decomposeOmit? (source : String) (stx : Syntax) :
 
 /-! ## Phase 1: process one source file -/
 
-/-- Re-elaborates `source` against `env` and classifies every command. `declPos` maps the byte index
-of each exposed declaration's range start to its name (so a command is a declaration command iff some
-such position falls inside it).
-
-Elaboration errors (notably "declaration already exists", since `env` already contains everything)
-are expected and ignored — we only consume the parsed `Syntax` and source positions, which are
-produced regardless. -/
+/-- Re-elaborates `source` against `env` (`parseCommands`) and classifies every command. `declPos`
+maps the byte index of each exposed declaration's range start to its name (so a command is a
+declaration command iff some such position falls inside it). -/
 def processFile (env : Environment) (source : String) (filePath : String)
     (declPos : Std.HashMap Nat Name) (notationKinds : Std.HashSet Name) :
     IO (Array CommandEntry) := do
-  let inputCtx := Parser.mkInputContext source filePath
-  let (_, parserState, messages) ← Parser.parseHeader inputCtx
-  let cmdState := Command.mkState env messages {}
-  let s ← IO.processCommands inputCtx parserState cmdState
+  let commands ← parseCommands env source filePath
   let mut entries : Array CommandEntry := #[]
   -- Stack of the fully-qualified namespace prefix in effect *after* each currently-open
   -- `namespace`/`section` frame, so a `namespace` command nested inside another (rather than
@@ -629,8 +595,7 @@ def processFile (env : Environment) (source : String) (filePath : String)
   -- empty stub for the bare name and the real (populated) one for the qualified name, which can
   -- make an unqualified reference to a member of the real one ambiguous.
   let mut nsPrefixStack : Array Name := #[Name.anonymous]
-  for stx in s.commands do
-    if stx.getKind == ``Parser.Module.header then continue
+  for stx in commands do
     let some cmdStart := stx.getPos? | continue
     let some cmdEnd := stx.getTailPos? | continue
     -- Which exposed declarations does this command define?
