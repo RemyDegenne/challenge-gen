@@ -136,15 +136,21 @@ def excludedOptions : Array Name := #[`specifies, `characterization]
 @[inherit_doc excludedOptions]
 def isExcludedOption (o : Name) : Bool := excludedOptions.any (hasPrefixName o ·)
 
-/-- The option a `set_option` command sets, read from its source text: the token after the keyword.
-Used for the file-level form, where the command survives as a context command rather than as part of
-a declaration's source. -/
-def setOptionName? (src : String) : Option Name :=
+/-- The option a `set_option` command sets and the value it sets it to, read from its source text:
+the token after the keyword, and the rest normalized to single-space-separated tokens (so two
+spellings of the same setting compare equal). Used for the file-level form, where the command
+survives as a context command rather than as part of a declaration's source. -/
+def setOptionSetting? (src : String) : Option (Name × String) :=
   let toks := (src.split fun c => c == ' ' || c == '\n' || c == '\t' || c == '\r').toArray
     |>.filterMap fun w =>
       let w := w.trimAscii.toString
       if w.isEmpty then none else some w
-  if toks[0]? == some "set_option" then toks[1]?.map (·.toName) else none
+  if toks[0]? == some "set_option" then
+    toks[1]?.map fun n => (n.toName, " ".intercalate (toks.toList.drop 2))
+  else none
+
+@[inherit_doc setOptionSetting?]
+def setOptionName? (src : String) : Option Name := (setOptionSetting? src).map (·.1)
 
 /-! ## Syntax inspection -/
 
@@ -863,18 +869,38 @@ def pruneOmit (env : Environment) (rootPrefix : Name) (excludedNames : Std.HashS
 
 /-- Role of a pre-rendered output chunk for scope balancing in `stripEmptyScopes`. -/
 inductive ScopeTag where
-  /-- Opens a strippable scope: `section`. Dropped if it ends up empty / `variable`-only. -/
+  /-- Opens a strippable scope: `section`. Dropped if it ends up holding nothing but `soft` chunks. -/
   | openSection
-  /-- Opens an always-kept scope: `namespace X`. Retained even when empty, so the namespace
-  reliably exists for later references. -/
+  /-- Opens a strippable scope: `namespace X`. Dropped on the same terms as `openSection`; the
+  namespace stubs at the top of the file are what keep `X` existing for later references. -/
   | openNamespace
   /-- Closes a scope: `end` or `end X`. -/
   | close
-  /-- A `variable` line: content that does *not*, on its own, justify keeping its scope. -/
+  /-- A scoped context command — `variable`, `open`, `set_option`, `universe` — whose whole effect is
+  on the enclosing scope's contents. It does *not*, on its own, justify keeping that scope: with
+  nothing left inside for it to act on, it is dropped along with it. -/
   | soft
   /-- A declaration or any other context command: forces the enclosing scope to be kept. -/
   | hard
   deriving BEq, Inhabited
+
+/-- A pre-rendered output chunk: its role for scope balancing, its text, and the project namespaces
+the text needs to exist (the one a `namespace X` enters, the ones an `open` names).
+
+Carrying the namespaces *per chunk* rather than collecting them from the source commands up front is
+what lets the stub block at the top of the file be restricted to the chunks that actually survive
+`stripEmptyScopes`. A target typically keeps a handful of declarations out of a module holding
+hundreds, so almost every `namespace … end` block is dropped — and a stub for a namespace no
+surviving line mentions is pure noise. -/
+structure OutChunk where
+  tag : ScopeTag
+  text : String
+  /-- Project namespaces this chunk references; stubbed iff the chunk survives. -/
+  namespaces : Array Name := #[]
+  /-- For a `set_option` chunk, the option it sets and the value it sets it to (see
+  `dropRedundantOptions`). -/
+  setOption? : Option (Name × String) := none
+  deriving Inhabited
 
 /-- Collapses runs of two or more consecutive blank lines into a single blank line. -/
 def collapseBlankRuns (s : String) : String :=
@@ -885,54 +911,131 @@ def collapseBlankRuns (s : String) : String :=
     | [] => [line]
   "\n".intercalate collapsed.reverse
 
-/-- Drops `section` and `namespace` scopes that contain no declarations and no context beyond
-`variable` lines (which are scoped to the dropped block, hence safe to remove with it). An empty or
-`variable`-only `namespace … end` block is useless here because the namespace stubs emitted at the
-top of the file already declare it for later references. `items` pairs each pre-rendered output chunk
-with a `ScopeTag` describing its role. A scope is kept iff it (transitively) contains a `hard` chunk;
-otherwise the whole `… end` block — `variable` lines included — is dropped. Because matching
+/-- Drops `section` and `namespace` scopes that contain no declarations and no context beyond the
+`soft` commands (`variable`/`open`/`set_option`/`universe`), which are scoped to the dropped block
+and hence safe to remove with it. A scope is kept iff it (transitively) contains a `hard` chunk;
+otherwise the whole `… end` block — `soft` lines included — is dropped. Because matching
 opens/closes are tracked on a stack, nesting stays balanced regardless of how deep an empty block
 is. -/
-def stripEmptyScopes (items : Array (ScopeTag × String)) : String := Id.run do
-  -- Stack of open scopes: (rendered open chunk, accumulated inner chunks, must be kept?).
-  let mut stack : Array (String × Array String × Bool) := #[]
-  let mut top : Array String := #[]   -- chunks already committed at the current outermost level
-  for (tag, s) in items do
-    match tag with
-    | .openSection => stack := stack.push (s, #[], false)
-    -- Namespaces start as "droppable" too: an empty or `variable`-only `namespace … end` later in
-    -- the file is useless, since the namespace stubs at the top already declare it for `open`s.
-    | .openNamespace => stack := stack.push (s, #[], false)
+def stripEmptyScopes (items : Array OutChunk) : Array OutChunk := Id.run do
+  -- Stack of open scopes: (open chunk, accumulated inner chunks, must be kept?).
+  let mut stack : Array (OutChunk × Array OutChunk × Bool) := #[]
+  let mut top : Array OutChunk := #[]   -- chunks already committed at the current outermost level
+  for c in items do
+    match c.tag with
+    -- Namespaces are droppable too: an empty or `soft`-only `namespace … end` block later in the
+    -- file is useless, since the namespace stubs at the top already declare it for `open`s.
+    | .openSection | .openNamespace => stack := stack.push (c, #[], false)
     | .close =>
       if stack.isEmpty then
-        top := top.push s   -- unbalanced (shouldn't happen): emit verbatim
+        top := top.push c   -- unbalanced (shouldn't happen): emit verbatim
       else
-        let (openLine, lines, hasContent) := stack.back!
+        let (openChunk, inner, hasContent) := stack.back!
         stack := stack.pop
         if hasContent then
-          let rendered := (#[openLine] ++ lines).push s
+          let rendered := (#[openChunk] ++ inner).push c
           if stack.isEmpty then
             top := top ++ rendered
           else
             let (po, pl, _) := stack.back!
             stack := stack.set! (stack.size - 1) (po, pl ++ rendered, true)
-        -- else: drop the scope (open chunk, inner `variable` lines, and close chunk) entirely.
+        -- else: drop the scope (open chunk, inner `soft` lines, and close chunk) entirely.
     | .soft =>
       if stack.isEmpty then
-        top := top.push s
+        top := top.push c
       else
         let (o, l, h) := stack.back!
-        stack := stack.set! (stack.size - 1) (o, l.push s, h)
+        stack := stack.set! (stack.size - 1) (o, l.push c, h)
     | .hard =>
       if stack.isEmpty then
-        top := top.push s
+        top := top.push c
       else
         let (o, l, _) := stack.back!
-        stack := stack.set! (stack.size - 1) (o, l.push s, true)
+        stack := stack.set! (stack.size - 1) (o, l.push c, true)
   -- Flush any unclosed scopes verbatim (shouldn't happen with well-formed sources).
-  for (openLine, lines, _) in stack do
-    top := (top.push openLine) ++ lines
-  return String.join top.toList
+  for (openChunk, inner, _) in stack do
+    top := (top.push openChunk) ++ inner
+  return top
+
+/-- Drops every `set_option` line that re-sets an option to the value already in effect where it
+stands. The option state is tracked as a stack that pops with each `end`, mirroring how Lean scopes
+the setting: a value restored by leaving a scope is *not* still in effect afterwards. -/
+def dropReSetOptions (chunks : Array OutChunk) : Array OutChunk := Id.run do
+  let mut out : Array OutChunk := #[]
+  let mut scopes : Array (Std.HashMap Name String) := #[{}]
+  for c in chunks do
+    match c.tag, c.setOption? with
+    | .openSection, _ | .openNamespace, _ =>
+      scopes := scopes.push {}
+      out := out.push c
+    | .close, _ =>
+      if scopes.size > 1 then scopes := scopes.pop
+      out := out.push c
+    | _, some (name, value) =>
+      -- The innermost scope that has set this option is the one in effect.
+      let inEffect? := scopes.reverse.findSome? (·.get? name)
+      unless inEffect? == some value do
+        scopes := scopes.set! (scopes.size - 1) (scopes.back!.insert name value)
+        out := out.push c
+    | _, none => out := out.push c
+  return out
+
+/-- Drops every `set_option` line immediately followed by another setting of the same option: nothing
+elaborates in between, so only the last setting of the run is ever in force. Adjacency is judged on
+the chunks as they will be written, which is why this runs *after* `dropReSetOptions` — a run like
+`autoImplicit`/`maxHeartbeats`/`autoImplicit`/`maxHeartbeats` only becomes a run of `maxHeartbeats`
+settings once the repeated `autoImplicit` lines are gone. A setting followed by a *scope* rather than
+by another setting is live, since what opens next inherits it. -/
+def dropSupersededOptions (chunks : Array OutChunk) : Array OutChunk :=
+  chunks.zipIdx.filterMap fun (c, i) =>
+    match c.setOption? with
+    | some (name, _) =>
+      if (chunks[i + 1]?.bind (·.setOption?)).any (·.1 == name) then none else some c
+    | none => some c
+
+/-- Drops every `set_option` line with no observable effect: one that re-sets an option to the value
+already in effect, and one immediately superseded by another setting of the same option.
+
+Worth doing because these come in runs. A source file that sets `autoImplicit false` and a heartbeat
+budget above each of its sections contributes one such pair per section, and once the sections
+themselves are gone (`stripEmptyScopes`) what is left is a block of consecutive settings with nothing
+between them for any of them but the last to apply to. -/
+def dropRedundantOptions (chunks : Array OutChunk) : Array OutChunk :=
+  dropSupersededOptions (dropReSetOptions chunks)
+
+/-- The project namespaces `chunks` reference, in first-mention order and deduplicated: the stubs the
+extracted file needs at its top. -/
+def chunkNamespaces (chunks : Array OutChunk) : Array Name := Id.run do
+  let mut seen : Std.HashSet Name := {}
+  let mut acc : Array Name := #[]
+  for c in chunks do
+    for ns in c.namespaces do
+      unless seen.contains ns do
+        seen := seen.insert ns
+        acc := acc.push ns
+  return acc
+
+/-- The project namespaces an `open` command's source text brings into scope.
+
+`known` holds fully-qualified names, but an `open` token may be spelled *relative* to a namespace
+already in scope — `open MeasureTheory … AEEqProcess` names `MeasureTheory.AEEqProcess`. Matching
+the bare token alone therefore misses it, no stub is emitted, and the whole `open` fails with
+`unknown namespace`, which in turn leaves the namespaces spelled correctly on the same line
+(`MeasureTheory`, …) unopened too. So each token is resolved against `prefixes` — the namespaces
+this file enters — plus the ones the same `open` command brings into scope ahead of it. -/
+def openedNamespaces (known : Std.HashSet Name) (prefixes : Array Name)
+    (src : String) : Array Name := Id.run do
+  let toks := ((src.replace "\n" " ").splitOn " ").toArray.map (·.trimAscii.toString.toName)
+  let mut acc : Array Name := #[]
+  for tok in toks do
+    if tok.isAnonymous then continue
+    let resolved? :=
+      if known.contains tok then some tok
+      else (prefixes ++ toks).findSome? fun p =>
+        let full := p ++ tok
+        if known.contains full then some full else none
+    if let some ns := resolved? then acc := acc.push ns
+  return acc
 
 /-- Assembles the standalone file for `target`. `cache` holds the processed entries per module;
 `moduleOrder` lists the project modules in dependency-first order; `keep` is the target's transitive
@@ -992,75 +1095,36 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
               for nm in binderBoundNames bsrc do
                 m := m.insert nm.toName ty
     return m
-  -- Project namespaces entered (`namespace Foo`) or opened (`open … Foo …`) across the involved
-  -- modules. We emit existence stubs for them up front, since an `open Foo` may precede the
-  -- `namespace Foo` that (re)creates `Foo` here — and may even refer to a namespace no kept
-  -- declaration re-enters.
-  let nsStubs : Array Name := Id.run do
-    let mut seen : Std.HashSet Name := {}
-    let mut acc : Array Name := #[]
-    let add (ns : Name) (seen : Std.HashSet Name) (acc : Array Name) :=
-      if seen.contains ns then (seen, acc) else (seen.insert ns, acc.push ns)
-    -- `projectNamespaces` holds fully-qualified names, but an `open` token may be spelled
-    -- *relative* to a namespace already in scope — `open MeasureTheory … AEEqProcess` names
-    -- `MeasureTheory.AEEqProcess`. Matching the bare token alone therefore misses it, no stub is
-    -- emitted, and the whole `open` fails with `unknown namespace`, which in turn leaves the
-    -- namespaces spelled correctly on the same line (`MeasureTheory`, …) unopened too. So resolve
-    -- each token against the namespaces this file enters, plus the ones the same `open` command
-    -- brings into scope ahead of it.
-    let mut prefixes : Array Name := #[Name.anonymous]
+  -- Namespaces entered by a `namespace` command anywhere in the involved modules. Deliberately
+  -- taken over *all* entries, not just the ones this target keeps: an `open` token has to resolve
+  -- to the same namespace it named in the source no matter what survives here.
+  let nsPrefixes : Array Name := Id.run do
+    let mut acc : Array Name := #[Name.anonymous]
     for (_, entries) in involved do
       for e in entries do
         if let some ns := e.qualifiedNsName? then
-          prefixes := prefixes.push ns
-    for (_, entries) in involved do
-      for e in entries do
-        if let some ns := e.qualifiedNsName? then
-          (seen, acc) := add ns seen acc
-        else if e.kind == ``Parser.Command.«open» then
-          -- Tokens after `open`/`scoped` that name a project namespace.
-          let toks := ((e.src.replace "\n" " ").splitOn " ").toArray.map
-            (·.trimAscii.toString.toName)
-          for tok in toks do
-            if tok.isAnonymous then continue
-            let resolved? :=
-              if projectNamespaces.contains tok then some tok
-              else (prefixes ++ toks).findSome? fun p =>
-                let full := p ++ tok
-                if projectNamespaces.contains full then some full else none
-            if let some ns := resolved? then
-              (seen, acc) := add ns seen acc
+          acc := acc.push ns
     return acc
-  let imports := externalImports env rootPrefix (involved.map (·.1))
-  -- The extracted files are terminal and self-contained (nothing imports them), so the source's
-  -- module-system scaffolding (`module` header, `public import`, `@[expose] public section`) is
-  -- unnecessary: plain `import`s suffice, and the `@[expose] public section` wrappers are dropped
-  -- below.
-  let importBlock := if imports.isEmpty then "import Mathlib\n" else
-    String.join (imports.toList.map (fun i => s!"import {i}\n"))
-  let mut out := importBlock
-  out := out ++ s!"\n/-! # Standalone extraction for `{target}`\n"
-    ++ "Definitions are copied verbatim; theorem proofs are replaced by `sorry`.\n"
-    ++ "Auto-generated by Referee. -/\n"
-  -- Replayed `notation`/`macro` commands may mention declarations that appear later in the file;
-  -- defer identifier resolution in their right-hand sides to use sites.
-  out := out ++ "\nset_option quotPrecheck false\n"
-  unless nsStubs.isEmpty do
-    out := out ++ "\n-- Namespace stubs (so later `open`s resolve).\n"
-    for ns in nsStubs do
-      out := out ++ s!"namespace {ns}\nend {ns}\n"
-  -- Build the per-module body as tagged chunks, then drop empty/`variable`-only scopes.
-  let mut items : Array (ScopeTag × String) := #[]
+  -- What an `open` token may resolve to: every namespace holding an exposed declaration, plus the
+  -- ones these modules enter. The second half matters because a namespace whose contents are all
+  -- unexposed appears in no declaration name, so `projectNamespaces` misses it — and an `open` of
+  -- it would then be left without the stub that makes it resolve.
+  let stubbable : Std.HashSet Name := nsPrefixes.foldl (·.insert ·) projectNamespaces
+  -- Build the per-module body as tagged chunks, then drop empty/`soft`-only scopes.
+  let mut items : Array OutChunk := #[]
   -- Namespace prefixes in scope when resolving `variable` binder identifiers: the root plus every
   -- entered (`namespace`) or opened (`open`) namespace. Accumulated (never popped) as an
   -- over-approximation of scope; `pruneVariable` only matches exact excluded names against it.
   let mut activePrefixes : Array Name := #[Name.anonymous]
   for (modName, entries) in involved do
+    -- The module's path below the root (`Foo.Bar` under root `Foo` reads as `Bar`), except for the
+    -- root module itself, whose path below the root is empty.
     let shortName :=
-      if hasPrefixName modName rootPrefix then
-        modName.toString.drop (rootPrefix.toString.length + 1)
+      if modName == rootPrefix then modName.toString
+      else if hasPrefixName modName rootPrefix then
+        (modName.toString.drop (rootPrefix.toString.length + 1)).toString
       else modName.toString
-    items := items.push (.hard, s!"\n-- ═══ {shortName} ═══\n")
+    items := items.push { tag := .hard, text := s!"\n-- ═══ {shortName} ═══\n" }
     -- Wraps each module's replayed content in its own `section … end`, so its `open` commands
     -- (which, unlike `notation`/`def`/etc., are scoped by `section`) don't leak into later
     -- modules. Without this, each contributing module's `open`s pile up across the whole
@@ -1068,7 +1132,7 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
     -- and repeating the same `open Foo` several times can make an unqualified name reachable
     -- through several redundant open-paths to the same declaration, which Lean then reports as
     -- ambiguous even though every path resolves to the exact same constant.
-    items := items.push (.openSection, "section\n")
+    items := items.push { tag := .openSection, text := "section\n" }
     for e in entries do
       match e.cls with
       | .context =>
@@ -1078,15 +1142,19 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
         else if e.kind == ``Parser.Command.«variable» then
           if let some v := pruneVariable env rootPrefix excludedNames activePrefixes boundVars
               boundVarTypes e then
-            items := items.push (.soft, v ++ "\n")
+            items := items.push { tag := .soft, text := v ++ "\n" }
         else if e.kind == ``Parser.Command.namespace then
           if let some ns := e.nsName? then
             activePrefixes := activePrefixes.push ns
-          items := items.push (.openNamespace, e.src ++ "\n")
+          -- The namespace this enters needs a stub only if this block survives — hence carried on
+          -- the chunk rather than collected from every `namespace` command in the module.
+          items := items.push
+            { tag := .openNamespace, text := e.src ++ "\n"
+              namespaces := e.qualifiedNsName?.toArray }
         else if e.kind == ``Parser.Command.«section» then
-          items := items.push (.openSection, e.src ++ "\n")
+          items := items.push { tag := .openSection, text := e.src ++ "\n" }
         else if e.kind == ``Parser.Command.«end» then
-          items := items.push (.close, e.src ++ "\n")
+          items := items.push { tag := .close, text := e.src ++ "\n" }
         else if e.kind == ``Parser.Command.«attribute» then
           -- Replayed only for translation attributes (see `translationAttributes`), and only when
           -- every name it targets actually exists here. The target test is stricter than
@@ -1100,11 +1168,20 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
               let full := pfx ++ n
               env.contains full && isProjectLocalConst env rootPrefix full && !keep.contains full
           if e.attrIsTranslation && !e.attrTargets.any targetMissing then
-            items := items.push (.hard, e.src ++ "\n")
-        else if e.kind == ``Parser.Command.«set_option»
-            && (setOptionName? e.src).any isExcludedOption then
-          pure ()   -- an option registered by a package this file does not import; see
-                    -- `excludedOptions`. The `set_option … in <decl>` form is handled in `mkSrc`.
+            items := items.push { tag := .hard, text := e.src ++ "\n" }
+        else if e.kind == ``Parser.Command.«set_option» then
+          if (setOptionName? e.src).any isExcludedOption then
+            pure ()   -- an option registered by a package this file does not import; see
+                      -- `excludedOptions`. The `set_option … in <decl>` form is handled in `mkSrc`.
+          else
+            -- Like `variable`: the option is scoped to the enclosing `section`/`namespace`, so it
+            -- affects only what is inside it. A block holding nothing but options no longer has
+            -- anything to configure, and goes with them.
+            items := items.push
+              { tag := .soft, text := e.src ++ "\n", setOption? := setOptionSetting? e.src }
+        else if e.kind == ``Parser.Command.«universe» then
+          -- Scoped like `variable`, and just as pointless in a block with nothing left to quantify.
+          items := items.push { tag := .soft, text := e.src ++ "\n" }
         else if e.kind == ``Parser.Command.«open» then
           -- Tokens after `open`/`scoped` name namespaces brought into scope.
           for tok in (e.src.replace "\n" " ").splitOn " " do
@@ -1112,19 +1189,54 @@ def assembleTarget (env : Environment) (rootPrefix : Name) (cache : Std.HashMap 
             unless nm.isAnonymous do activePrefixes := activePrefixes.push nm
           -- Like `variable`: emitted if its scope survives, but doesn't on its own keep an otherwise
           -- empty `section`/`namespace` alive.
-          items := items.push (.soft, e.src ++ "\n")
+          items := items.push
+            { tag := .soft, text := e.src ++ "\n"
+              namespaces := openedNamespaces stubbable nsPrefixes e.src }
         else
-          items := items.push (.hard, e.src ++ "\n")
+          items := items.push { tag := .hard, text := e.src ++ "\n" }
       | .decl =>
         let body := pruneOmit env rootPrefix excludedNames activePrefixes boundVars boundVarTypes e
         let mut s := "\n" ++ body ++ "\n"
         for extra in e.appended do
           s := s ++ extra ++ "\n"
         s := s ++ "\n"
-        items := items.push (.hard, s)
+        -- `open Foo in <decl>` (a `Command.in` node) carries its own `open`, which needs `Foo` to
+        -- exist just as a standalone one does. Only the first line is scanned: that is where the
+        -- prefix sits, and scanning the whole declaration would match every fully-qualified name
+        -- in its statement.
+        let inlineOpens :=
+          if e.kind == ``Parser.Command.in then
+            openedNamespaces stubbable nsPrefixes (body.splitOn "\n").head!
+          else #[]
+        items := items.push { tag := .hard, text := s, namespaces := inlineOpens }
       | .skip => pure ()
-    items := items.push (.close, "end\n")
-  out := out ++ stripEmptyScopes items
+    items := items.push { tag := .close, text := "end\n" }
+  -- What survives, and — read off it — the namespaces the surviving lines still refer to.
+  let kept := dropRedundantOptions (stripEmptyScopes items)
+  let body := String.join (kept.toList.map (·.text))
+  let nsStubs := chunkNamespaces kept
+  let imports := externalImports env rootPrefix (involved.map (·.1))
+  -- The extracted files are terminal and self-contained (nothing imports them), so the source's
+  -- module-system scaffolding (`module` header, `public import`, `@[expose] public section`) is
+  -- unnecessary: plain `import`s suffice, and the `@[expose] public section` wrappers are dropped
+  -- above.
+  let importBlock := if imports.isEmpty then "import Mathlib\n" else
+    String.join (imports.toList.map (fun i => s!"import {i}\n"))
+  let mut out := importBlock
+  out := out ++ s!"\n/-! # Standalone extraction for `{target}`\n"
+    ++ "Definitions are copied verbatim; theorem proofs are replaced by `sorry`.\n"
+    ++ "Auto-generated by Referee. -/\n"
+  -- Replayed `notation`/`macro` commands may mention declarations that appear later in the file;
+  -- defer identifier resolution in their right-hand sides to use sites.
+  out := out ++ "\nset_option quotPrecheck false\n"
+  -- Existence stubs for the namespaces the body still names, since an `open Foo` may precede the
+  -- `namespace Foo` that (re)creates `Foo` here — and may even refer to a namespace no kept
+  -- declaration re-enters.
+  unless nsStubs.isEmpty do
+    out := out ++ "\n-- Namespace stubs (so later `open`s resolve).\n"
+    for ns in nsStubs do
+      out := out ++ s!"namespace {ns}\nend {ns}\n"
+  out := out ++ body
   return (collapseBlankRuns out).trimAsciiEnd.toString ++ "\n"
 
 /-! ## Driver -/
