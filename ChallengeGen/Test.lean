@@ -126,16 +126,136 @@ options included. -/
 #guard !isExcludedOption `maxHeartbeats
 #guard !isExcludedOption `linter.all
 
-/-! ## `setOptionName?`
+/-! ## `setOptionSetting?` / `setOptionName?`
 
 The file-level `set_option` survives as a context command rather than inside a declaration's source,
-so the option it names is read back out of that text. -/
+so the option it names — and, for `dropRedundantOptions`, the value it sets — is read back out of
+that text. -/
 
 #guard setOptionName? "set_option specifies.checkTargetMentioned false" ==
   some `specifies.checkTargetMentioned
 #guard setOptionName? "set_option maxHeartbeats 400000" == some `maxHeartbeats
 #guard setOptionName? "set_option\n  pp.all\n  true" == some `pp.all   -- laid out over lines
 #guard setOptionName? "variable {α : Type*}" == none                   -- not a `set_option` at all
+
+#guard setOptionSetting? "set_option maxHeartbeats 400000" == some (`maxHeartbeats, "400000")
+#guard setOptionSetting? "set_option autoImplicit false" == some (`autoImplicit, "false")
+-- Values are normalized to single-space-separated tokens, so two layouts of the same setting are
+-- recognised as the same setting.
+#guard setOptionSetting? "set_option\n  pp.all\n  true" == some (`pp.all, "true")
+#guard setOptionSetting? "set_option pp.all   true" == some (`pp.all, "true")
+#guard setOptionSetting? "variable {α : Type*}" == none
+
+/-! ## `stripEmptyScopes` / `chunkNamespaces`
+
+A `section`/`namespace` block that ends up holding nothing but scoped context commands
+(`variable`/`open`/`set_option`/`universe`) is dropped whole, brackets included — and with it the
+namespace stub it would otherwise have asked for at the top of the file. -/
+
+private def chunkText (cs : Array OutChunk) : String := String.join (cs.toList.map (·.text))
+
+-- Nothing but `soft` lines inside: the block goes, `end` included.
+#guard chunkText (stripEmptyScopes #[
+    { tag := .openSection, text := "section\n" },
+    { tag := .soft, text := "variable {α : Type*}\n" },
+    { tag := .soft, text := "set_option autoImplicit false\n" },
+    { tag := .close, text := "end\n" }]) == ""
+
+-- One `hard` chunk keeps the whole block, `soft` lines included.
+#guard chunkText (stripEmptyScopes #[
+    { tag := .openSection, text := "section\n" },
+    { tag := .soft, text := "variable {α : Type*}\n" },
+    { tag := .hard, text := "def x := 1\n" },
+    { tag := .close, text := "end\n" }]) == "section\nvariable {α : Type*}\ndef x := 1\nend\n"
+
+-- An empty inner block is dropped without disturbing the outer one it sits in.
+#guard chunkText (stripEmptyScopes #[
+    { tag := .openNamespace, text := "namespace A\n" },
+    { tag := .openSection, text := "section\n" },
+    { tag := .soft, text := "open B\n" },
+    { tag := .close, text := "end\n" },
+    { tag := .hard, text := "def x := 1\n" },
+    { tag := .close, text := "end A\n" }]) == "namespace A\ndef x := 1\nend A\n"
+
+-- Stubs are read off what survived: the dropped block's namespace is not asked for.
+#guard chunkNamespaces (stripEmptyScopes #[
+    { tag := .openNamespace, text := "namespace Gone\n", namespaces := #[`Gone] },
+    { tag := .close, text := "end Gone\n" },
+    { tag := .openNamespace, text := "namespace Kept\n", namespaces := #[`Kept] },
+    { tag := .hard, text := "def x := 1\n" },
+    { tag := .close, text := "end Kept\n" }]) == #[`Kept]
+
+/-! ## `dropRedundantOptions` -/
+
+private def optionChunk (name : Name) (value text : String) : OutChunk :=
+  { tag := .soft, text, setOption? := some (name, value) }
+
+-- Re-setting an option to the value already in effect is a no-op line, so it goes.
+#guard chunkText (dropRedundantOptions #[
+    optionChunk `autoImplicit "false" "set_option autoImplicit false\n",
+    optionChunk `autoImplicit "false" "set_option autoImplicit false\n"]) ==
+  "set_option autoImplicit false\n"
+
+-- A different value with nothing between the two lines supersedes the first, so only the last
+-- setting of a run survives.
+#guard chunkText (dropRedundantOptions #[
+    optionChunk `maxHeartbeats "400000" "set_option maxHeartbeats 400000\n",
+    optionChunk `maxHeartbeats "800000" "set_option maxHeartbeats 800000\n"]) ==
+  "set_option maxHeartbeats 800000\n"
+
+-- ...but a declaration between them elaborates under the first, which therefore stays.
+#guard chunkText (dropRedundantOptions #[
+    optionChunk `maxHeartbeats "400000" "set_option maxHeartbeats 400000\n",
+    { tag := .hard, text := "def x := 1\n" },
+    optionChunk `maxHeartbeats "800000" "set_option maxHeartbeats 800000\n"]) ==
+  "set_option maxHeartbeats 400000\ndef x := 1\nset_option maxHeartbeats 800000\n"
+
+-- A scope opening next inherits the setting, so it is live even with no declaration after it.
+#guard chunkText (dropRedundantOptions #[
+    optionChunk `maxHeartbeats "400000" "set_option maxHeartbeats 400000\n",
+    { tag := .openSection, text := "section\n" },
+    { tag := .hard, text := "def x := 1\n" },
+    { tag := .close, text := "end\n" }]) ==
+  "set_option maxHeartbeats 400000\nsection\ndef x := 1\nend\n"
+
+-- The two passes compose in this order and not the other: the heartbeat settings below are a run
+-- only once the repeated `autoImplicit` lines between them are gone, so superseding is judged on
+-- what `dropReSetOptions` leaves behind. This is the shape a per-section option preamble collapses
+-- to once its sections are stripped.
+#guard chunkText (dropRedundantOptions #[
+    optionChunk `autoImplicit "false" "set_option autoImplicit false\n",
+    optionChunk `maxHeartbeats "400000" "set_option maxHeartbeats 400000\n",
+    optionChunk `autoImplicit "false" "set_option autoImplicit false\n",
+    optionChunk `maxHeartbeats "800000" "set_option maxHeartbeats 800000\n"]) ==
+  "set_option autoImplicit false\nset_option maxHeartbeats 800000\n"
+
+-- Leaving a scope restores the option, so setting it again afterwards is *not* redundant.
+#guard chunkText (dropRedundantOptions #[
+    { tag := .openSection, text := "section\n" },
+    optionChunk `autoImplicit "false" "set_option autoImplicit false\n",
+    { tag := .close, text := "end\n" },
+    optionChunk `autoImplicit "false" "set_option autoImplicit false\n"]) ==
+  "section\nset_option autoImplicit false\nend\nset_option autoImplicit false\n"
+
+-- ...whereas a value set outside a scope is still in effect inside it.
+#guard chunkText (dropRedundantOptions #[
+    optionChunk `autoImplicit "false" "set_option autoImplicit false\n",
+    { tag := .openSection, text := "section\n" },
+    optionChunk `autoImplicit "false" "set_option autoImplicit false\n",
+    { tag := .close, text := "end\n" }]) == "set_option autoImplicit false\nsection\nend\n"
+
+/-! ## `openedNamespaces` -/
+
+-- A token spelled relative to a namespace already in scope resolves to the full name, so the stub
+-- the `open` needs is the one actually named.
+#guard openedNamespaces (Std.HashSet.ofList [`MeasureTheory, `MeasureTheory.AEEqProcess])
+    #[.anonymous, `MeasureTheory] "open MeasureTheory AEEqProcess" ==
+  #[`MeasureTheory, `MeasureTheory.AEEqProcess]
+-- Tokens naming nothing in the project (`Classical`, the `open`/`scoped` keywords) contribute no
+-- stub.
+#guard openedNamespaces (Std.HashSet.ofList [`Foo]) #[.anonymous] "open scoped Classical Foo" ==
+  #[`Foo]
+#guard openedNamespaces (Std.HashSet.ofList [`Foo]) #[.anonymous] "open Classical" == #[]
 
 /-! ## `isTranslationAttribute`
 
