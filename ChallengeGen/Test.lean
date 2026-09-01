@@ -1,26 +1,28 @@
 module
 
-public import Referee.Extract
+public import ChallengeGen
 -- The checks below are `#guard`s, which Lean elaborates into compile-time (`meta`)
 -- definitions, so the declarations under test have to be imported at that level too.
-meta import Referee.Extract
+meta import ChallengeGen
 
 @[expose] public section
 
 /-!
-# Tests for `Referee.Extract`
+# Tests for `ChallengeGen`
 
 The bulk of extraction renders declarations from the elaborated environment and is exercised
 end-to-end against a real project (constructing a synthetic `Environment`/`Syntax` for those paths is
-impractical). Here we unit-test the pure string/syntax helpers.
+impractical). Here we unit-test the pure string/syntax helpers, plus the name mapping that decides
+what an extracted file is called.
 
-Each check is a `#guard`, so any regression turns into a build error. Run with `lake build Test`.
+Each check is a `#guard`, so any regression turns into a build error. Run with
+`lake build ChallengeGenTest`.
 -/
 
 open Lean Std
-open Referee
+open ChallengeGen
 
-namespace Referee.Test
+namespace ChallengeGen.Test
 
 /-! ## `collapseBlankRuns` -/
 
@@ -83,9 +85,9 @@ the ones that *generate* declarations the closure may depend on must survive. -/
 #guard !isDroppedAttribute false "simp"
 #guard !isDroppedAttribute false "refl"
 
--- `@[specifies]` records a link for Referee to read back and does nothing in a standalone file. It
--- is dropped in every form, which is what lets `isExcludedImport` withhold the
--- `Characterization` import.
+-- `@[specifies]` records a link for a reading tool to pick back out and does nothing in a
+-- standalone file. It is dropped in every form, which is what lets `isExcludedImport` withhold
+-- the `Characterization` import.
 #guard isDroppedAttribute false "specifies"
 #guard isDroppedAttribute false "specifies entropy"
 #guard isDroppedAttribute false "specifies entropy \"agrees with the textbook formula\""
@@ -283,4 +285,23 @@ are the ones whose loss makes *other* declarations fail to elaborate. -/
 #guard (collectSyntaxKinds (.node .none `A.b #[.node .none `C.d #[]])).contains `C.d
 #guard !(collectSyntaxKinds (.node .none `A.b #[])).contains `X.y
 
-end Referee.Test
+/-! ## Names of the files written
+
+`anchorIdOf` is the stem of the file written for a declaration, so it is a contract with whoever
+links to those files rather than an internal convenience — hence checked here, next to the code
+that writes them. -/
+
+#guard nameComponents `Foo.bar.baz == ["Foo", "bar", "baz"]
+#guard nameComponents Name.anonymous == ([] : List String)
+
+#guard anchorIdOf `Foo.bar.baz == "Foo___bar___baz"
+#guard anchorIdOf `Foo == "Foo"
+-- Characters forbidden in filenames on some operating systems (Windows: `< > : " / \ | ? *`) are
+-- replaced by fullwidth lookalikes, so notation declarations like `«term𝓛[_|_;_]»` yield portable
+-- filenames. The component is `«…»`-escaped by `Name.toString`; we check the `|` is gone and the
+-- fullwidth `｜` is present, without pinning the exact escaping.
+#guard !(anchorIdOf (.str (.str .anonymous "N") "a|b")).any (· == '|')
+#guard (anchorIdOf (.str (.str .anonymous "N") "a|b")).any (· == '｜')
+#guard !(anchorIdOf (.str (.str .anonymous "N") "a?*b")).any (fun c => c == '?' || c == '*')
+
+end ChallengeGen.Test

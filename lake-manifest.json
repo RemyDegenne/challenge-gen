@@ -1,0 +1,16 @@
+{"version": "1.2.0",
+ "packagesDir": ".lake/packages",
+ "packages":
+ [{"url": "https://github.com/RemyDegenne/meaning-graph",
+   "type": "git",
+   "subDir": null,
+   "scope": "",
+   "rev": "ff2ff1a6b59abdb53c9901e5b366f88a5ea71b40",
+   "name": "MeaningGraph",
+   "manifestFile": "lake-manifest.json",
+   "inputRev": "main",
+   "inherited": false,
+   "configFile": "lakefile.toml"}],
+ "name": "ChallengeGen",
+ "lakeDir": ".lake",
+ "fixedToolchain": false}

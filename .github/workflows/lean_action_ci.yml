@@ -1,0 +1,20 @@
+name: Lean Action CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: leanprover/lean-action@v1
+
+      # `lake build` builds the default target, the library alone. The checks are a separate target,
+      # so without this step neither the string/syntax helpers nor the file-naming contract would be
+      # checked here. They are elaboration-time, so building the target is running them.
+      - name: Build tests
+        run: lake build ChallengeGenTest

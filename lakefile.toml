@@ -1,0 +1,29 @@
+name = "ChallengeGen"
+version = "0.1.0"
+defaultTargets = ["ChallengeGen"]
+
+# The dependency closure to inline is an input, not something this package computes — but a
+# standalone consumer has to compute it somehow, and `MeaningGraph` is what does that. Lean core
+# plus that, and deliberately nothing else: a project generating challenges must not have to take
+# on a document-generation build (Verso, SubVerso, MD4Lean, …) to do it.
+[[require]]
+name = "MeaningGraph"
+git = "https://github.com/RemyDegenne/meaning-graph"
+rev = "main"
+
+# No glob: the default builds the root module and whatever it imports, and the root imports every
+# submodule. A `ChallengeGen.*` glob would be wrong here rather than merely redundant — it would
+# sweep `ChallengeGen.Test` into the library a consumer imports.
+[[lean_lib]]
+name = "ChallengeGen"
+
+# The `#guard` checks, as a target separate from the library: they are not part of what a consumer
+# imports, and they are checked at elaboration time, so building this target *is* running them.
+#
+# The module is `ChallengeGen.Test`, not `Test`. Module roots are shared across a whole Lake
+# workspace, so a package that claims the top-level name `Test` takes it away from every project
+# that requires it. That is not hypothetical: this package was written inside a repository with a
+# `Test` library of its own, and claiming the name there broke that repository's test build.
+[[lean_lib]]
+name = "ChallengeGenTest"
+roots = ["ChallengeGen.Test"]

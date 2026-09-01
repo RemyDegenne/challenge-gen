@@ -7,15 +7,15 @@ public import Lean
 /-!
 # Re-parsing a project's source, and reading declaration keywords off the syntax
 
-Two things `Referee.Collect` and `Referee.Extract` both need, and answered separately before this
-module existed: re-parsing a source file against the already-loaded environment, and searching a
-command's syntax tree for a node of a given kind.
+Two things the extraction and the tool producing its input both need, and answered separately
+before this module existed: re-parsing a source file against the already-loaded environment, and
+searching a command's syntax tree for a node of a given kind.
 
-Neither is incidental to one of them. `collect` reads a declaration's *keyword* this way — which
+Neither is incidental to one of them. A producer reads a declaration's *keyword* this way — which
 cannot be recovered from the compiled environment, since Mathlib's `lemma` is a macro that rewrites
-itself to `theorem` before elaboration — and `extract` decides from the same syntax whether a command
-is a theorem whose proof should be replaced by `sorry`. They were asking the same question of the
-same parse.
+itself to `theorem` before elaboration — and `Extract` decides from the same syntax whether a
+command is a theorem whose proof should be replaced by `sorry`. They were asking the same question
+of the same parse.
 
 Keeping the answer in one place matters beyond tidiness: the two copies had already drifted.
 `Extract.isTheoremDecl` matched Mathlib's `lemma` but not the Batteries command it overrides, so in a
@@ -25,7 +25,7 @@ instead of `sorry`. Both callers now consult `theoremSyntaxKinds`.
 
 open Lean
 
-namespace Referee
+namespace ChallengeGen
 
 /-! ## Declaration keywords, as syntax kinds
 
@@ -103,4 +103,4 @@ def parseCommands (env : Environment) (source : String) (filePath : String) : IO
   let s ← Lean.Elab.IO.processCommands inputCtx parserState cmdState
   return s.commands.filter (·.getKind != ``Lean.Parser.Module.header)
 
-end Referee
+end ChallengeGen
