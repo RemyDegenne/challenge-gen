@@ -33,7 +33,7 @@ The cost is readability, which is exactly the trade this tier is for.
    constants each rendering references. Rendering *is* the dependency analysis: a constant is a
    dependency iff the printed form mentions it.
 2. Per target, take the transitive closure of that reference map in topological order
-   (`LeanDeps.topologicalClosure`) and concatenate the renderings.
+   (`MeaningGraph.topologicalClosure`) and concatenate the renderings.
 3. Prepend the external (non-project) import frontier, reusing `externalImports`.
 
 Auto-generated constants (constructors, recursors, projections, `noConfusion`, …) are never
@@ -45,7 +45,7 @@ open Lean Lean.Meta
 
 namespace Referee.Flat
 
-open LeanDeps
+open MeaningGraph
 
 /-! ## Rendering names as legal identifiers -/
 

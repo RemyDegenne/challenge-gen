@@ -35,7 +35,7 @@ open Lean Lean.Elab Lean.Elab.Command Lean.Parser
 
 namespace Referee
 
-open LeanDeps
+open MeaningGraph
 
 /-! ## Classified commands -/
 
@@ -108,20 +108,20 @@ structure CommandEntry where
 
 /-- External modules left out of an extracted file's import block even when the project imports them.
 
-`LeanSpec` is the only one. It provides `@[specifies]` and `@[characterization]` and nothing else a
-formalization refers to: both record links for Referee to read back out of the environment, and it
-is *this file* that reads them — an extraction of one declaration has nothing to say with them. So
-the annotations are stripped (`isDroppedAttribute`) along with any option they are tuned by
+`Characterization` is the only one. It provides `@[specifies]` and `@[characterization]` and nothing
+else a formalization refers to: both record links for Referee to read back out of the environment,
+and it is *this file* that reads them — an extraction of one declaration has nothing to say with
+them. So the annotations are stripped (`isDroppedAttribute`) along with any option they are tuned by
 (`excludedOptions`), and then the import has nothing left to serve.
 
 Keeping it is worse than useless for the `--site-url` link: the web editor has Mathlib and nothing
-else, so a file importing `LeanSpec` does not compile there at all and the reader's first act has
-to be deleting a line.
+else, so a file importing `Characterization` does not compile there at all and the reader's first
+act has to be deleting a line.
 
-The cost is a project that mentions a `LeanSpec` *constant* (`SpecEntry`, `specEntries`) in a
-declaration this tool extracts — a tool reading annotations, not a formalization writing them. Such
-a declaration loses the import it needs. -/
-def excludedImports : Array Name := #[`LeanSpec]
+The cost is a project that mentions a `Characterization` *constant* (`SpecEntry`, `specEntries`) in
+a declaration this tool extracts — a tool reading annotations, not a formalization writing them.
+Such a declaration loses the import it needs. -/
+def excludedImports : Array Name := #[`Characterization]
 
 @[inherit_doc excludedImports]
 def isExcludedImport (m : Name) : Bool := excludedImports.any (hasPrefixName m ·)
@@ -130,7 +130,7 @@ def isExcludedImport (m : Name) : Bool := excludedImports.any (hasPrefixName m �
 is an `unknown option` error once the import is gone, so both forms — the file-level command and the
 `set_option … in <decl>` prefix — are dropped from the extracted file. `specifies` and
 `characterization` cover `specifies.checkTargetMentioned` and
-`characterization.checkNotCircular`, the two options `LeanSpec` registers. -/
+`characterization.checkNotCircular`, the two options `Characterization` registers. -/
 def excludedOptions : Array Name := #[`specifies, `characterization]
 
 @[inherit_doc excludedOptions]
@@ -441,10 +441,11 @@ Two cases:
   term, it is invisible to the dependency analysis and the lemma is not in the closure. Registering
   the lemma for the `ext` tactic is of no use in a file whose proofs are all `sorry`.
 * `@[specifies]` and `@[characterization]`: their only effect is to record a link for Referee to
-  read back (`LeanSpec`), which says nothing in a one-declaration file — a characterization's three
-  parts are three separate declarations, so an extraction of any one of them has at most a third of
-  the claim. Dropping them is what lets `excludedImports` leave `import LeanSpec` out of the
-  header — the two go together, since an unimported attribute is a hard error.
+  read back (`Characterization`), which says nothing in a one-declaration file — a
+  characterization's three parts are three separate declarations, so an extraction of any one of
+  them has at most a third of the claim. Dropping them is what lets `excludedImports` leave the
+  `Characterization` import out of the header — the two go together, since an unimported attribute
+  is a hard error.
 
 Three near neighbours are deliberately **kept**, each because it *produces* something the rest of
 the file may depend on rather than merely registering one:

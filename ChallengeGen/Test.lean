@@ -84,7 +84,8 @@ the ones that *generate* declarations the closure may depend on must survive. -/
 #guard !isDroppedAttribute false "refl"
 
 -- `@[specifies]` records a link for Referee to read back and does nothing in a standalone file. It
--- is dropped in every form, which is what lets `isExcludedImport` withhold `import LeanSpec`.
+-- is dropped in every form, which is what lets `isExcludedImport` withhold the
+-- `Characterization` import.
 #guard isDroppedAttribute false "specifies"
 #guard isDroppedAttribute false "specifies entropy"
 #guard isDroppedAttribute false "specifies entropy \"agrees with the textbook formula\""
@@ -109,17 +110,17 @@ the ones that *generate* declarations the closure may depend on must survive. -/
 
 /-! ## `isExcludedImport` / `isExcludedOption`
 
-`LeanSpec` carries the `@[specifies]` and `@[characterization]` attributes and nothing a
+`Characterization` carries the `@[specifies]` and `@[characterization]` attributes and nothing a
 formalization refers to; since every annotation is stripped, the extracted file must not import
 it — the web editor has Mathlib only. Whatever the dropped import registered has to go with it,
 options included. -/
 
-#guard isExcludedImport `LeanSpec
-#guard isExcludedImport `LeanSpec.Basic          -- a submodule, were the package ever to grow one
+#guard isExcludedImport `Characterization
+#guard isExcludedImport `Characterization.Basic -- a submodule, were the package ever to grow one
 -- Component-wise, so a project whose name merely starts the same way is untouched.
-#guard !isExcludedImport `LeanSpecExtra
+#guard !isExcludedImport `CharacterizationExtra
 #guard !isExcludedImport `Mathlib
-#guard !isExcludedImport `Mathlib.Order.LeanSpec
+#guard !isExcludedImport `Mathlib.Order.Characterization
 
 #guard isExcludedOption `specifies.checkTargetMentioned
 #guard isExcludedOption `characterization.checkNotCircular
