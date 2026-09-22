@@ -11,7 +11,7 @@ name = "MeaningGraph"
 git = "https://github.com/RemyDegenne/meaning-graph"
 # The tag matching `lean-toolchain`: upstream tags each toolchain bump, and `main` may already be
 # on a newer toolchain than this package. Bump the two together.
-rev = "v4.34.0"
+rev = "v4.35.0-rc2"
 
 # No glob: the default builds the root module and whatever it imports, and the root imports every
 # submodule. A `ChallengeGen.*` glob would be wrong here rather than merely redundant — it would
